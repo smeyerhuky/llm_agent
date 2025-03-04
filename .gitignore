@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
@@ -169,3 +170,11 @@ cython_debug/
 
 # PyPI configuration file
 .pypirc
+
+# local introductions
+backup_prompt_cache_*.db
+cache.session.sql
+data/*cache.db
+docker_projects/
+logs
+pip_cache

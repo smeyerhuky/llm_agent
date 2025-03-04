@@ -1,0 +1,5 @@
+version: '3.8'
+services:
+  # Dynamically added services will appear here
+volumes:
+  pip_cache: {}
