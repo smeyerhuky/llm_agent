@@ -2,6 +2,7 @@
 
 import os
 import uuid
+import requests
 import time
 import logging
 import subprocess
@@ -15,6 +16,98 @@ from faiss_cache import BASE_DIR
 from colorama import Fore, Style
 
 logger = logging.getLogger(__name__)
+
+def run_python_code_in_service(code_str, user_prompt):
+    """
+    Run Python code using the persistent execution service
+    instead of creating a new Docker container each time.
+    """
+    project_name = make_project_name(user_prompt)
+    project_dir = prepare_project_dir(project_name)
+    
+    start_time = time.time()
+    
+    # Write code to file for reference
+    script_path = os.path.join(project_dir, "script.py")
+    with open(script_path, "w", encoding="utf-8") as f:
+        f.write(code_str)
+    
+    # Detect dependencies using the existing function
+    packages = detect_missing_packages(code_str)
+    
+    # Ensure execution service is running
+    from docker_executor import ensure_execution_service
+    if not ensure_execution_service():
+        return {
+            "combined_output": "[Execution Error] Failed to start execution service.",
+            "result_summary": "Execution service error.",
+            "code_path": script_path
+        }
+    
+    # Submit to execution service
+    service_url = "http://localhost:5000"  # Adjust for your setup
+    payload = {
+        "code": code_str,
+        "requirements": packages,
+        "task_id": None  # Let the service generate one
+    }
+    
+    try:
+        # Submit job
+        response = requests.post(f"{service_url}/execute", json=payload)
+        response.raise_for_status()
+        task_data = response.json()
+        task_id = task_data["task_id"]
+        
+        # Poll for results (with timeout)
+        timeout = 180  # 3 minutes
+        while time.time() - start_time < timeout:
+            result_response = requests.get(f"{service_url}/result/{task_id}")
+            if result_response.status_code != 200:
+                break
+                
+            result_data = result_response.json()
+            if "status" not in result_data or result_data.get("status") != "running":
+                # We have a result
+                break
+                
+            time.sleep(1)  # Wait before polling again
+        
+        # Get final result (wait=true to ensure we get it)
+        final_result = requests.get(f"{service_url}/result/{task_id}?wait=true").json()
+        
+        # Format combined output similar to current format
+        combined_output = (
+            f"```markdown\n"
+            f"--- STDOUT ---\n{final_result.get('stdout', '')}\n"
+            f"--- STDERR ---\n{final_result.get('stderr', '')}\n"
+            f"--- RETURN CODE ---\n{final_result.get('returncode', '')}\n```"
+        )
+        
+        # Process the results
+        from prompts import summarize_output
+        result_summary = summarize_output(combined_output)
+        
+        # Cleanup resources
+        requests.post(f"{service_url}/cleanup/{task_id}")
+        
+        duration_ms = int((time.time() - start_time) * 1000)
+        logger.debug(f"Code execution took {duration_ms}ms total.")
+        
+        write_result_files(project_dir, result_summary, combined_output)
+        
+        return {
+            "combined_output": combined_output,
+            "result_summary": result_summary,
+            "code_path": script_path
+        }
+    except Exception as e:
+        logger.error(f"Error executing code via execution service: {e}")
+        return {
+            "combined_output": f"[Execution Error] {str(e)}",
+            "result_summary": f"Execution failed: {str(e)}",
+            "code_path": script_path
+        }
 
 def print_system_message(message: str):
     """
@@ -104,7 +197,7 @@ def evaluate_docker_output(output: str) -> bool:
     return "exited with code 0" in output.lower()
 
 
-def run_python_code_in_docker(code_str: str, user_prompt: str) -> Dict[str, str]:
+def run_python_code_in_docker_original(code_str: str, user_prompt: str) -> Dict[str, str]:
     """
     Build & run user code in a Docker container, capturing output and summarizing results.
     Returns { "combined_output", "result_summary", "code_path" }.
@@ -220,3 +313,10 @@ def run_python_code_in_docker(code_str: str, user_prompt: str) -> Dict[str, str]
         "result_summary": result_summary,
         "code_path": code_path
     }
+
+def run_python_code_in_docker(code_str, user_prompt):
+    """
+    Build & run user code using the persistent execution service
+    instead of creating a new Docker container each time.
+    """
+    return run_python_code_in_service(code_str, user_prompt)

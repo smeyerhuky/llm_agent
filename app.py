@@ -58,6 +58,10 @@ def main_loop():
 
     load_faiss()
 
+    # Add this line to ensure the execution service is running
+    from docker_executor import ensure_execution_service
+    ensure_execution_service()
+
     while True:
         user_prompt = input("[User] ").strip()
         if user_prompt.lower() in ("exit", "quit"):

@@ -1,5 +1,37 @@
 version: '3.8'
 services:
-  # Dynamically added services will appear here
+  execution_service:
+    build:
+      context: ./execution_service
+    container_name: llm_agent_executor
+    working_dir: /app
+    volumes:
+      - ./execution_service:/app
+      - ./pip_cache:/app/pip_cache
+      - ./venvs:/app/venvs
+    ports:
+      - "5000:5000"
+    restart: unless-stopped
+    environment:
+      - MAX_WORKERS=4
+      - VENV_DIR=/app/venvs
+      - PIP_CACHE_DIR=/app/pip_cache
+      - LOG_LEVEL=INFO
+    # Resource limits to prevent abuse
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 2G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+    # Enhanced security options
+    security_opt:
+      - no-new-privileges:true
+    # Drop all capabilities and only add necessary ones
+    cap_drop:
+      - ALL
+
 volumes:
   pip_cache: {}
