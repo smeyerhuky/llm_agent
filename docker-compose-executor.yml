@@ -21,11 +21,8 @@ services:
     deploy:
       resources:
         limits:
-          cpus: '2.0'
-          memory: 2G
-        reservations:
-          cpus: '0.5'
-          memory: 512M
+          cpus: '12.0'
+          memory: 12G
     # Enhanced security options
     security_opt:
       - no-new-privileges:true
