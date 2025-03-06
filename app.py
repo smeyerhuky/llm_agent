@@ -13,7 +13,7 @@ from faiss_cache import (
 from docker_executor import force_cleanup_executor
 from run_code import run_python_code_in_docker
 from prompts import (
-    classify_request, stream_llm_response, judge_response, finalize_task,
+    classify_request, stream_llm_response, judge_response, finalize_task, get_code_prompt,
     FAST_MODEL, ADVANCED_MODEL, scrape_web
 )
 try:
@@ -183,12 +183,10 @@ def main_loop():
                 store_feedback(user_prompt, fb)
                 continue
 
-            # If no code cache hit, generate code from scratch
+            # Combine the components into the messages array.
             logger.info("Classification => code_needed => generating new code with GPT-4.")
-            messages = [
-                {"role": "system", "content": "You are an advanced Python developer. Output code in triple backticks if needed."},
-                {"role": "user", "content": f"Write a Python script for: {user_prompt}"}
-            ]
+            messages = get_code_prompt(user_prompt)
+
             code_str = stream_llm_response(model=ADVANCED_MODEL, messages=messages)
             exec_result = run_python_code_in_docker(code_str, user_prompt)
             final_resp = {"type": "code", "code": code_str, "execution_result": exec_result, "code_path": exec_result["code_path"]}

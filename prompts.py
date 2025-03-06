@@ -222,7 +222,7 @@ def finalize_task(user_prompt: str, result_summary: str, code_path: str, judgeme
                 {"role": "user", "content": prompt}
             ],
             max_tokens=200,
-            temperature=0.3
+            temperature=0.45
         )
         final_output_text = resp.choices[0].message.content.strip()
         return json.loads(final_output_text)
@@ -235,8 +235,52 @@ def finalize_task(user_prompt: str, result_summary: str, code_path: str, judgeme
             "rating": judgement.get("judge_evaluation", {}).get("correctness", "N/A")
         }
 
+def get_code_prompt(user_prompt: str) -> list[dict[str, str]]:
+    # This section sets the context and expectations for the AI model.
+            preprompt_padding = """You are a highly skilled Python developer and data scientist. Your responsibility is to generate usable, efficient, and well-structured Python code based on the given requirements. Emphasize clarity, organization, and providing a cohesive solution."""
 
-def stream_llm_response(model: str, messages: list, temperature=0.3) -> str:
+            # Here is the main task prompt with required format and reinforcement examples.
+            task_prompt = f"""
+            Use the following structure to address the task:
+            1. **Task Decomposition:** Break down the problem into manageable steps.
+            2. **Approach Explanation:** Briefly describe the approach for each step.
+            3. **Code Generation:** Provide Python code within triple backticks for each step.
+
+            Example 1:
+            - Task: Perform frequency analysis on text.
+            - Explanation: Count word occurrences.
+            - Code: ```python
+            from collections import Counter
+
+            def frequency_analysis(text):
+                words = text.split()
+                frequency = Counter(words)
+                return frequency
+            Example 2:
+
+            Task: Conduct semantic analysis using NLP techniques.
+            Explanation: Use NLP libraries to extract semantic meanings.
+            Code: ```python import spacy
+            nlp = spacy.load('en_core_web_sm') def semantic_analysis(text): doc = nlp(text) for token in doc: print(token.text, token.lemma_, token.pos_, token.dep_)
+
+            Prompt:
+            Given the request "{user_prompt}", execute the following:
+            - **Breakdown the task into logical components.**
+            - **Implement a solution using Python code.**
+            - **Ensure all outputs are wrapped within triple backticks.**
+
+            Final Note: Always double-check your code for accuracy and completeness.
+            """
+
+            # Combine the components into the messages array.
+            logger.info("Classification => code_needed => generating new code with GPT-4.")
+            return [
+                {"role": "system", "content": preprompt_padding},
+                {"role": "user", "content": task_prompt}
+            ]
+            
+
+def stream_llm_response(model: str, messages: list, temperature=0.5) -> str:
     """
     Stream a ChatCompletion from OpenAI and extract any code in triple backticks.
     """

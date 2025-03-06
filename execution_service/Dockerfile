@@ -3,7 +3,7 @@ FROM python:3.9-slim
 WORKDIR /app
 
 # Install required packages
-RUN pip install flask gunicorn numpy matplotlib pandas scikit-learn
+RUN pip install flask gunicorn csv faker numpy matplotlib pandas scikit-learn opencv-python bs4 torch 
 
 # Create directories
 RUN mkdir -p /app/venvs /app/pip_cache
