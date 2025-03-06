@@ -218,7 +218,7 @@ def finalize_task(user_prompt: str, result_summary: str, code_path: str, judgeme
         resp = client.chat.completions.create(
             model=FINAL_MODEL,
             messages=[
-                {"role": "system", "content": "You are a final output generator."},
+                {"role": "system", "content": "You are a final output generator. Create a small summary based on the final output given in the prompt. User the knowledge you have as a smarty pants to give a summary and provide the actual results."},
                 {"role": "user", "content": prompt}
             ],
             max_tokens=200,
@@ -239,8 +239,13 @@ def get_code_prompt(user_prompt: str) -> list[dict[str, str]]:
     # This section sets the context and expectations for the AI model.
             preprompt_padding = """You are a highly skilled Python developer and data scientist. Your responsibility is to generate usable, efficient, and well-structured Python code based on the given requirements. Emphasize clarity, organization, and providing a cohesive solution."""
 
+
             # Here is the main task prompt with required format and reinforcement examples.
-            task_prompt = f"""
+
+            preprompt_padding = """You are a highly skilled Python developer. When generating code examples in other languages, use alternative formatting instead of triple backticks when used inside of a code block"""
+    
+            # Passed at the end as user instructions along with the user's prompt
+            user_instructions = f"""
             Use the following structure to address the task:
             1. **Task Decomposition:** Break down the problem into manageable steps.
             2. **Approach Explanation:** Briefly describe the approach for each step.
@@ -256,20 +261,60 @@ def get_code_prompt(user_prompt: str) -> list[dict[str, str]]:
                 words = text.split()
                 frequency = Counter(words)
                 return frequency
+            ```    
             Example 2:
 
             Task: Conduct semantic analysis using NLP techniques.
             Explanation: Use NLP libraries to extract semantic meanings.
-            Code: ```python import spacy
+            Code: ```
+            python import spacy
             nlp = spacy.load('en_core_web_sm') def semantic_analysis(text): doc = nlp(text) for token in doc: print(token.text, token.lemma_, token.pos_, token.dep_)
+            ```
 
             Prompt:
             Given the request "{user_prompt}", execute the following:
             - **Breakdown the task into logical components.**
             - **Implement a solution using Python code.**
-            - **Ensure all outputs are wrapped within triple backticks.**
+            - **Ensure all code snippets are wrapped within triple backticks.**
+            - **Ensure all strings and multiline or interpolated strings avoide using backticks.
 
             Final Note: Always double-check your code for accuracy and completeness.
+            """
+
+            # Modify your task_prompt to include this instruction clearly
+            task_prompt = f"""
+            When showing examples of code in other languages, DO NOT USE TRIPLE BACKTICKS in string literals.
+            ALWAYS avoid triple backticks in strings and string literalls. Only use it when showing a whole codeblock:
+            
+
+            A NEGATVIE EXAMPLE (DO NOT WRITE CODE LIKE THIS):
+            ...
+            ...
+            ...
+            The code below shows how you could store a string of python code with triple ticks
+            ```python
+            some_code_snippet = "```python
+import os
+print(os)
+```
+         ```
+
+         The above example is terrible. Instead when using a string or string interpolaton or anything that results in a string see below:
+            WRITE CODE LIKE THIS
+            ```python
+            some_code_snippet=\"\"\"
+import os
+print(os)
+\"\"\"        
+            ```
+
+            This way it is easiest to parse from the response as only executable code is meant to be surrounded by triple backticks.
+            No Strings should use triple backticks within any code provided.
+
+            User Instructions and request for code: {user_instructions}
+
+
+            It is important to remember you are a command line assistant and shouldn't try to display to the screen. Instead use terminal buffering and color enhancing techniques or imports.
             """
 
             # Combine the components into the messages array.
@@ -280,7 +325,7 @@ def get_code_prompt(user_prompt: str) -> list[dict[str, str]]:
             ]
             
 
-def stream_llm_response(model: str, messages: list, temperature=0.5) -> str:
+def stream_llm_response(model: str, messages: list, temperature=0.35) -> str:
     """
     Stream a ChatCompletion from OpenAI and extract any code in triple backticks.
     """

@@ -18,7 +18,7 @@ def ensure_execution_service():
             "-f", 
             EXECUTOR_COMPOSE_PATH, 
             "ps", 
-            "-q", 
+            # "-q", 
             "execution_service"
         ], check=True, capture_output=True)
         
