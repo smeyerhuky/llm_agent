@@ -31,6 +31,47 @@ stored_data: List[Tuple[str, int]] = []
 # Create a single global OpenAI client for embeddings
 embedding_client = OpenAI()
 
+
+# In faiss_cache.py, add:
+
+def store_error_pattern(user_prompt: str, code: str, error_output: str, fix_attempt: str = None):
+    """
+    Store error patterns for future learning.
+    
+    Args:
+        user_prompt: Original user request
+        code: Code that produced the error
+        error_output: Error messages from execution
+        fix_attempt: The code that fixed the error (if available)
+    """
+    now_str = datetime.now().isoformat()
+    
+    conn = sqlite3.connect(CACHE_DB)
+    cur = conn.cursor()
+    try:
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS error_patterns (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_prompt TEXT,
+                error_code TEXT,
+                error_output TEXT,
+                fix_code TEXT,
+                timestamp DATETIME
+            )
+        """)
+        
+        cur.execute("""
+            INSERT INTO error_patterns (user_prompt, error_code, error_output, fix_code, timestamp)
+            VALUES (?, ?, ?, ?, ?)
+        """, (user_prompt, code, error_output, fix_attempt, now_str))
+        
+        conn.commit()
+        logger.debug("Stored error pattern in database.")
+    except Exception as e:
+        logger.error(f"Failed to store error pattern: {e}")
+    finally:
+        conn.close()
+
 def init_db():
     """
     Create tables for caching, lessons, judge evaluations, and feedback if they don't exist.

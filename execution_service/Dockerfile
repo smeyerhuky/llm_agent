@@ -6,7 +6,7 @@ FROM agents_execution_service:latest
 WORKDIR /app
 
 # Install required packages
-RUN pip install flask gunicorn faker numpy matplotlib pandas scikit-learn opencv-python bs4 torch 
+RUN pip install re flask gunicorn faker numpy matplotlib pandas scikit-learn opencv-python bs4 torch 
 
 # Create directories
 RUN mkdir -p /app/venvs /app/pip_cache

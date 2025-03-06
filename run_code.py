@@ -3,19 +3,98 @@
 import os
 import uuid
 import requests
+import re
 import time
 import logging
 import subprocess
 from typing import Dict
 from datetime import datetime
 
-from prompts import summarize_output, refine_code, summarize_refinement
+from prompts import summarize_output, summarize_refinement
 from prompts import extract_code_from_chunk
 from docker_executor import update_executor_compose, force_cleanup_executor, EXECUTOR_COMPOSE_PATH
 from faiss_cache import BASE_DIR
 from colorama import Fore, Style
 
 logger = logging.getLogger(__name__)
+
+# Configuration
+ENABLE_AUTO_RETRIES = True  # Set to False to disable automatic retries
+MAX_RETRY_ATTEMPTS = 3      # Maximum number of retry attempts
+
+
+def run_python_code_with_retries(code_str: str, user_prompt: str, max_retries: int = 3) -> Dict[str, str]:
+    """
+    Run Python code with automatic retries on failure.
+    
+    Args:
+        code_str: The Python code to execute
+        user_prompt: The original user prompt
+        max_retries: Maximum number of retry attempts (default: 3)
+    
+    Returns:
+        Dictionary with execution results
+    """
+    attempt = 0
+    best_result = None
+    
+    while attempt <= max_retries:
+        # Execute the current code
+        if attempt == 0:
+            print_system_message(f"Executing initial code solution (attempt {attempt + 1}/{max_retries + 1})...")
+        else:
+            print_system_message(f"Executing refined solution (attempt {attempt + 1}/{max_retries + 1})...")
+            
+        exec_result = run_python_code_in_docker(code_str, user_prompt)
+        
+        # Check if execution was successful
+        if evaluate_docker_output(exec_result["combined_output"]):
+            # Success - return the result
+            print_system_message("Execution successful!")
+            return exec_result
+        
+        # Keep track of the best result so far (even if all fail)
+        if best_result is None or (
+            # Heuristic: fewer error messages might mean it's closer to working
+            len(exec_result["combined_output"]) < len(best_result["combined_output"])
+        ):
+            best_result = exec_result
+        
+        # If we've reached max retries, break
+        if attempt >= max_retries:
+            break
+            
+        # Generate improved code for next attempt
+        print_system_message(f"Execution failed. Generating improved solution...")
+        
+        # Generate improved prompt based on errors
+        from prompts import generate_refined_prompt, stream_llm_response, ADVANCED_MODEL
+        
+        refined_messages = generate_refined_prompt(
+            user_prompt=user_prompt,
+            code_str=code_str,
+            execution_result=exec_result,
+            attempt=attempt + 1
+        )
+        
+        # Get improved code
+        print_system_message("Generating refined code solution...")
+        refined_code = stream_llm_response(model=ADVANCED_MODEL, messages=refined_messages)
+        
+        # Update the code for the next attempt
+        code_str = refined_code
+        attempt += 1
+        
+        # Show a summary of what's being fixed
+        from prompts import summarize_refinement
+        refinement_summary = summarize_refinement(code_str, exec_result["combined_output"])
+        print_system_message("Refinement approach:")
+        print(refinement_summary)
+        print()
+    
+    # If we get here, all attempts failed
+    print_system_message(f"All {max_retries + 1} execution attempts failed. Returning best attempt.")
+    return best_result
 
 def run_python_code_in_service(code_str, user_prompt):
     """
@@ -190,129 +269,42 @@ def write_result_files(project_dir: str, result: str, scan: str):
     logger.info(f"Wrote result to {result_path} & scan to {scan_path}")
 
 
-def evaluate_docker_output(output: str) -> bool:
+def evaluate_docker_output(output: str) -> tuple[bool, str]:
     """
-    We assume success if 'exited with code 0' is found in logs.
+    Evaluates if docker execution was successful and extracts error details.
+    
+    Returns:
+        Tuple of (success_bool, error_message)
     """
-    return "exited with code 0" in output.lower()
-
-
-def run_python_code_in_docker_original(code_str: str, user_prompt: str) -> Dict[str, str]:
-    """
-    Build & run user code in a Docker container, capturing output and summarizing results.
-    Returns { "combined_output", "result_summary", "code_path" }.
-    """
-    project_name = make_project_name(user_prompt)
-    project_dir = prepare_project_dir(project_name)
-    unique_id = uuid.uuid4().hex[:6]
-    service_name = f"user_service_{project_name}_{unique_id}"
-    logger.debug(f"Generated service name: {service_name}")
-
-    start_time = time.time()
-
-    script_path = os.path.join(project_dir, "script.py")
-    with open(script_path, "w", encoding="utf-8") as f:
-        f.write(code_str)
-    code_path = script_path
-    logger.debug(f"Wrote code to {script_path}")
-
-    reqs_path = os.path.join(project_dir, "requirements.txt")
-    packages = detect_missing_packages(code_str)
-    with open(reqs_path, "w", encoding="utf-8") as f:
-        for pkg in packages:
-            f.write(pkg + "\n")
-        f.write("requests\n")
-    logger.debug(f"Wrote requirements.txt with packages: {packages}")
-
-    update_executor_compose(service_name, project_dir)
-    if not os.path.exists(EXECUTOR_COMPOSE_PATH):
-        logger.error("docker-compose-executor.yml missing; can't proceed.")
-        return {
-            "combined_output": "[Execution Error] Executor compose file missing.",
-            "result_summary": "",
-            "code_path": code_path
-        }
-
-    # 1) pip install
-    cmd_install = [
-        "docker-compose", "-f", EXECUTOR_COMPOSE_PATH, "run", "--rm",
-        service_name, "pip", "install", "-r", "requirements.txt"
+    # Check for obvious success signals
+    if "exited with code 0" in output.lower():
+        return True, ""
+    
+    # Extract error patterns
+    error_patterns = [
+        (r"ImportError: No module named '([^']+)'", "Missing module: {}"),
+        (r"ModuleNotFoundError: No module named '([^']+)'", "Missing module: {}"),
+        (r"NameError: name '([^']+)' is not defined", "Undefined variable: {}"),
+        (r"SyntaxError: ([^(]+)", "Syntax error: {}"),
+        (r"TypeError: ([^(]+)", "Type error: {}"),
+        (r"IndexError: ([^(]+)", "Index error: {}"),
+        (r"KeyError: ([^'\"]+)", "Key error: {}"),
+        (r"FileNotFoundError: ([^(]+)", "File not found: {}"),
+        (r"PermissionError: ([^(]+)", "Permission error: {}"),
+        (r"ValueError: ([^(]+)", "Value error: {}"),
     ]
-    logger.debug(f"Running pip install via: {cmd_install}")
-
-    try:
-        proc_install = subprocess.run(cmd_install, cwd=project_dir, capture_output=True, text=True, timeout=120)
-    except subprocess.TimeoutExpired:
-        return {
-            "combined_output": "[Execution Error] Docker container timed out during pip install.",
-            "result_summary": "",
-            "code_path": code_path
-        }
-
-    install_stdout, install_stderr = proc_install.stdout, proc_install.stderr
-
-    # 2) docker-compose up
-    cmd_up = [
-        "docker-compose", "-f", EXECUTOR_COMPOSE_PATH, "up", "--build",
-        "--abort-on-container-exit", "--always-recreate-deps", service_name
-    ]
-    logger.debug(f"Running code container via: {cmd_up}")
-
-    try:
-        proc_up = subprocess.run(cmd_up, cwd=project_dir, capture_output=True, text=True, timeout=180)
-    except subprocess.TimeoutExpired:
-        return {
-            "combined_output": "[Execution Error] Docker container timed out while running script.",
-            "result_summary": "",
-            "code_path": code_path
-        }
-    finally:
-        # Always attempt to shut down
-        try:
-            subprocess.run(["docker-compose", "-f", EXECUTOR_COMPOSE_PATH, "down"], cwd=project_dir)
-            logger.info("Docker Compose execution cleaned up.")
-        except Exception as cleanup_e:
-            logger.warning(f"Cleanup error: {cleanup_e}")
-
-    stdout, stderr = proc_up.stdout, proc_up.stderr
-    if "Conflict" in stderr:
-        logger.warning(f"Container name conflict for {service_name}. Attempting forced removal.")
-        subprocess.run(["docker", "rm", "-f", service_name])
-
-    # Combine logs
-    combined_output = (
-        f"```markdown\n"
-        f"--- PIP INSTALL STDOUT ---\n{install_stdout}\n"
-        f"--- PIP INSTALL STDERR ---\n{install_stderr}\n\n"
-        f"--- DOCKER COMPOSE STDOUT ---\n{stdout}\n"
-        f"--- DOCKER COMPOSE STDERR ---\n{stderr}\n```"
-    )
-
-    from prompts import summarize_output
-    result_summary = summarize_output(combined_output)
-    print_system_message(f"**RESULT:** {result_summary}")
-    print(combined_output)
-    duration_ms = int((time.time() - start_time) * 1000)
-    logger.debug(f"Docker execution took {duration_ms}ms total.")
-
-    write_result_files(project_dir, result_summary, combined_output)
-
-    # Check for success
-    if not evaluate_docker_output(combined_output):
-        refine_choice = input("Execution output indicates issues. Refine and re-run? (y/n): ").strip().lower()
-        if refine_choice == "y":
-            diff_summary = summarize_refinement(code_str, combined_output)
-            print_system_message("Refinement Summary:")
-            print(diff_summary)
-            refined = refine_code(code_str, combined_output, user_prompt)
-            print_system_message("Refined code generated. Re-running execution...\n")
-            return run_python_code_in_docker(refined, user_prompt)
-
-    return {
-        "combined_output": combined_output,
-        "result_summary": result_summary,
-        "code_path": code_path
-    }
+    
+    error_messages = []
+    for pattern, template in error_patterns:
+        matches = re.findall(pattern, output)
+        for match in matches:
+            error_messages.append(template.format(match))
+    
+    if error_messages:
+        return False, "; ".join(error_messages)
+    
+    # If no specific errors found but exit code wasn't 0
+    return False, "Execution failed with non-zero exit code"
 
 def run_python_code_in_docker(code_str, user_prompt):
     """

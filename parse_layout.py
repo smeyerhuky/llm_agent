@@ -20,7 +20,6 @@ special markers in the final output.
 
 import sys
 import re
-import os
 from pathlib import Path
 
 # Change this if you want a different output folder:
